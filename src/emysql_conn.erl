@@ -28,6 +28,7 @@
 -module(emysql_conn).
 -export([set_database/2, set_encoding/2,
         execute/3, prepare/3, unprepare/2,
+        transaction/2,
         open_connections/1, open_connection/1,
         reset_connection/3, close_connection/1,
         open_n_connections/2, hstate/1,
@@ -134,6 +135,43 @@ unprepare(Connection, Name) when is_atom(Name)->
     unprepare(Connection, atom_to_list(Name));
 unprepare(Connection, Name) ->
     Packet = <<?COM_QUERY, "DEALLOCATE PREPARE ", (list_to_binary(Name))/binary>>,  % todo: utf8?
+    emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
+
+transaction(Connection, Fun) ->
+    case begin_transaction(Connection) of
+        #ok_packet{} ->
+            try Fun() of
+                Val ->
+                    case commit_transaction(Connection) of
+                        #ok_packet{} ->
+                            {atomic, Val};
+                        #error_packet{} = ErrorPacket ->
+                            {aborted, {commit_error, ErrorPacket}}
+                    end
+            catch
+                _:Exception ->
+                   rollback_transaction(Connection),
+                    case Exception of
+                        {aborted, Reason} ->
+                            {aborted, Reason};
+                        _ ->
+                            exit(Exception)
+                    end
+            end;
+        #error_packet{} = ErrorPacket ->
+            {aborted, {begin_error, ErrorPacket}}
+    end.
+
+begin_transaction(Connection) ->
+    Packet = <<?COM_QUERY, "BEGIN">>,
+    emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
+
+rollback_transaction(Connection) ->
+    Packet = <<?COM_QUERY, "ROLLBACK">>,
+    emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
+
+commit_transaction(Connection) ->
+    Packet = <<?COM_QUERY, "COMMIT">>,
     emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
 
 open_n_connections(PoolId, N) ->
