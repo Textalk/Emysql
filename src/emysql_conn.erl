@@ -27,6 +27,7 @@
 %% @private
 -module(emysql_conn).
 -export([set_database/2, set_encoding/2,
+        encode/1,
         execute/3, execute/4, prepare/3, prepare/4, unprepare/2, unprepare/3,
         open_connections/1, open_connection/1,
         reset_connection/3, close_connection/1,
@@ -85,6 +86,11 @@ set_encoding(Connection, Encoding) ->
 %% @todo This can go away once the underlying socket accepts IOData
 canonicalize_query(Q) when is_binary(Q) -> Q;
 canonicalize_query(QL) when is_list(QL) -> iolist_to_binary(QL).
+
+%% @doc Encode an Erlang term for insertion in an SQL query.
+-spec encode(term()) -> binary().
+encode(Value) ->
+    encode(Value, binary).
 
 execute(Connection, Query, Args) ->
     execute(Connection, Query, Args, emysql_app:default_timeout()).
