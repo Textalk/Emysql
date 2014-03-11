@@ -624,15 +624,19 @@ execute(PoolId, StmtName, Args, Timeout, nonblocking) when is_atom(StmtName), is
             unavailable
     end.
 
+%% @see transaction/3.
 transaction(PoolId, Fun) ->
     transaction(PoolId, Fun, default_timeout()).
 
+%% @doc Applies Fun inside a transaction. Fun should be a function of arity 1, accepting a
+%% Connection as its parameter. Within the transaction, all queries should go directly to
+%% emysql_conn:execute(Connection, QueryOrStmt, QueryParams).
 transaction(PoolId, Fun, Timeout) ->
     case emysql_conn_mgr:lock_connection(PoolId) of
         Connection when is_record(Connection, emysql_connection) ->
-            monitor_work(Connection, Timeout, {emysql_conn, transaction, [Connection, Fun]});
-        Other ->
-            Other
+            monitor_work(Connection, Timeout, fun emysql_conn:transaction/2, [Connection, Fun]);
+        unavailable ->
+            unavailable
     end.
 
 %% @doc Return the field names of a result packet
@@ -722,10 +726,16 @@ as_record(Res, Recname, Fields, Fun) -> emysql_conv:as_record(Res, Recname, Fiel
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-%% @spec monitor_work(Connection, Timeout, {M, F, A}) -> Result | exit()
+
+%% @doc Shorthand for monitor_work/4 with function being fun emysql_conn:execute/3
+monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_connection) ->
+    monitor_work(Connection0, Timeout, fun emysql_conn:execute/3, Args).
+
+%% @spec monitor_work(Connection, Timeout, Fun, Args) -> Result | exit()
 %%      PoolId = atom()
 %%      Query = binary() | string()
 %%      StmtName = atom()
+%%      Fun  = fun()
 %%      Args = [any()]
 
 %%      Timeout = integer() | infinity
@@ -749,7 +759,8 @@ as_record(Res, Recname, Fields, Fun) -> emysql_conv:as_record(Res, Recname, Fiel
 %% @private
 %% @end doc: hd feb 11
 %%
-monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_connection) ->
+monitor_work(Connection0, Timeout, Fun, Args) when is_record(Connection0, emysql_connection),
+                                                   is_function(Fun, length(Args)) ->
     Connection = case emysql_conn:need_test_connection(Connection0) of
        true ->
           emysql_conn:test_connection(Connection0, keep);
@@ -763,7 +774,7 @@ monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_conn
     {Pid, Mref} = spawn_monitor(
                     fun() ->
                             put(query_arguments, Args),
-                            Parent ! {self(), apply(fun emysql_conn:execute/3, Args)}
+                            Parent ! {self(), apply(Fun, Args)}
                     end),
     receive
         {'DOWN', Mref, process, Pid, tcp_connection_closed} ->
@@ -771,7 +782,7 @@ monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_conn
                 NewConnection when is_record(NewConnection, emysql_connection) ->
                     %% re-loop, with new connection.
                     [_ | OtherArgs] = Args,
-                    monitor_work(NewConnection, Timeout , [NewConnection | OtherArgs]);
+                    monitor_work(NewConnection, Timeout, Fun, [NewConnection | OtherArgs]);
                 {error, FailedReset} ->
                     exit({connection_down, {and_conn_reset_failed, FailedReset}})
             end;

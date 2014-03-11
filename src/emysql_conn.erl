@@ -143,10 +143,10 @@ unprepare(Connection, Name) ->
     Packet = <<?COM_QUERY, "DEALLOCATE PREPARE ", (list_to_binary(Name))/binary>>,  % todo: utf8?
     emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
 
-transaction(Connection, Fun) ->
+transaction(Connection, Fun) when is_function(Fun, 1) ->
     case begin_transaction(Connection) of
         #ok_packet{} ->
-            try Fun() of
+            try Fun(Connection) of
                 Val ->
                     case commit_transaction(Connection) of
                         #ok_packet{} ->
