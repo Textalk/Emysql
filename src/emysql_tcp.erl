@@ -52,7 +52,7 @@ send_and_recv_packet(Sock, Packet, SeqNum) ->
         List -> List
     end.
 
-response_list(Sock, DefaultTimeout, ServerStatus) -> 
+response_list(Sock, DefaultTimeout, ServerStatus) ->
     response_list(Sock, DefaultTimeout, ServerStatus, <<>>).
 
 response_list(_, _DefaultTimeout, 0, <<>>) -> [];  %%no further data received after last response.
@@ -144,7 +144,7 @@ recv_packet_header(Sock, Timeout, Buff) when erlang:byte_size(Buff) < 4 ->
         end;
 recv_packet_header(_Sock, _Timeout, Buff) ->
         exit({bad_packet_header_data, Buff}).
-    
+
 
 recv_packet_body(Sock, PacketLength, Timeout, Buff) ->
     case Buff of
@@ -237,11 +237,11 @@ parse_buffer(_FieldList,Buff, Acc) ->
 
 decode_row_data(<<>>, []) ->
     [];
-decode_row_data(<<Length:8, Data:Length/binary, Tail/binary>>, [Field|Rest]) 
+decode_row_data(<<Length:8, Data:Length/binary, Tail/binary>>, [Field|Rest])
         when Length =< 250 ->
     [type_cast_row_data(Data, Field) | decode_row_data(Tail, Rest)];
 %% 251 means null
-decode_row_data(<<251:8, Tail/binary>>, [Field|Rest]) ->  
+decode_row_data(<<251:8, Tail/binary>>, [Field|Rest]) ->
     [type_cast_row_data(undefined, Field) | decode_row_data(Tail, Rest)];
 decode_row_data(<<252:8, Length:16/little, Data:Length/binary, Tail/binary>>, [Field|Rest]) ->
     [type_cast_row_data(Data, Field) | decode_row_data(Tail, Rest)];
@@ -264,8 +264,8 @@ cast_fun_for(Type) ->
      {?FIELD_TYPE_LONGLONG, fun to_integer/1},
      {?FIELD_TYPE_INT24, fun to_integer/1},
      {?FIELD_TYPE_YEAR, fun to_integer/1},
-     {?FIELD_TYPE_DECIMAL, fun to_float/1},
-     {?FIELD_TYPE_NEWDECIMAL, fun to_float/1},
+     {?FIELD_TYPE_DECIMAL, fun to_decimal/1},
+     {?FIELD_TYPE_NEWDECIMAL, fun to_decimal/1},
      {?FIELD_TYPE_FLOAT, fun to_float/1},
      {?FIELD_TYPE_DOUBLE, fun to_float/1},
      {?FIELD_TYPE_DATE, fun to_date/1},
@@ -303,6 +303,17 @@ to_float(Data) ->
           Res
     end,
     Num.
+to_decimal(Data) ->
+    case application:get_env(emysql, decimal_format) of
+        undefined ->
+            to_float(Data);
+        float ->
+            to_float(Data);
+        binary ->
+            identity(Data);
+        Function when is_function(Function, 1) ->
+            Function(Data)
+    end.
 to_date(Data) ->
     case io_lib:fread("~d-~d-~d", binary_to_list(Data)) of  % note: does not need conversion
         {ok, [Year, Month, Day], _} ->
