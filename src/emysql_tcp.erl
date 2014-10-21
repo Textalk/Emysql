@@ -26,7 +26,7 @@
 %% OTHER DEALINGS IN THE SOFTWARE.
 %% @private
 -module(emysql_tcp).
--export([send_and_recv_packet/3, recv_packet/3, parse_response/4]).
+-export([send_and_recv_packet/3, send_and_recv_packet/4, recv_packet/3, parse_response/4]).
 
 -include("emysql.hrl").
 -include("emysql_internal.hrl").
@@ -35,6 +35,11 @@
 
 -spec send_and_recv_packet(port(), iodata(), integer()) -> packet_result() | [packet_result()].
 send_and_recv_packet(Sock, Packet, SeqNum) ->
+    send_and_recv_packet(Sock, Packet, SeqNum, emysql_app:default_timeout()).
+
+-spec send_and_recv_packet(port(), iodata(), integer(), integer() | infinity) ->
+    packet_result() | [packet_result()].
+send_and_recv_packet(Sock, Packet, SeqNum, Timeout) ->
     case gen_tcp:send(Sock, [<<(size(Packet)):24/little, SeqNum:8>>, Packet]) of
         ok -> ok;
         {error, closed} ->
@@ -43,8 +48,7 @@ send_and_recv_packet(Sock, Packet, SeqNum) ->
             %% with the atom `conn_tcp_closed` we special-case that and rehandle it properly
             exit(tcp_connection_closed)
     end,
-    DefaultTimeout = emysql_app:default_timeout(),
-    case response_list(Sock, DefaultTimeout, ?SERVER_MORE_RESULTS_EXIST) of
+    case response_list(Sock, Timeout, ?SERVER_MORE_RESULTS_EXIST) of
         % This is a bit murky. It's compatible with former Emysql versions
         % but sometimes returns a list, e.g. for stored procedures,
         % since an extra OK package is sent at the end of their results.

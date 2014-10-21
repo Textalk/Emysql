@@ -27,7 +27,7 @@
 %% @private
 -module(emysql_conn).
 -export([set_database/2, set_encoding/2,
-        execute/3, prepare/3, unprepare/2,
+        execute/3, execute/4, prepare/3, prepare/4, unprepare/2, unprepare/3,
         open_connections/1, open_connection/1,
         reset_connection/3, close_connection/1,
         open_n_connections/2, hstate/1,
@@ -86,59 +86,68 @@ set_encoding(Connection, Encoding) ->
 canonicalize_query(Q) when is_binary(Q) -> Q;
 canonicalize_query(QL) when is_list(QL) -> iolist_to_binary(QL).
 
-execute(Connection, StmtName, []) when is_atom(StmtName) ->
+execute(Connection, Query, Args) ->
+    execute(Connection, Query, Args, emysql_app:default_timeout()).
+
+execute(Connection, StmtName, [], Timeout) when is_atom(StmtName) ->
     prepare_statement(Connection, StmtName),
     StmtNameBin = atom_to_binary(StmtName, utf8),
     Packet = <<?COM_QUERY, "EXECUTE ", StmtNameBin/binary>>,
-    send_recv(Connection, Packet);
-execute(Connection, Query, []) ->
+    send_recv(Connection, Packet, Timeout);
+execute(Connection, Query, [], Timeout) ->
     QB = canonicalize_query(Query),
     Packet = <<?COM_QUERY, QB/binary>>,
-    send_recv(Connection, Packet);
-execute(Connection, Query, Args) when (is_list(Query) orelse is_binary(Query)) andalso is_list(Args) ->
+    send_recv(Connection, Packet, Timeout);
+execute(Connection, Query, Args, Timeout) when (is_list(Query) orelse is_binary(Query)) andalso is_list(Args) ->
     StmtName = "stmt_"++integer_to_list(erlang:phash2(Query)),
-    ok = prepare(Connection, StmtName, Query),
+    ok = prepare(Connection, StmtName, Query, Timeout),
     Ret =
     case set_params(Connection, 1, Args, undefined) of
         OK when is_record(OK, ok_packet) ->
             ParamNamesBin = list_to_binary(string:join([[$@ | integer_to_list(I)] || I <- lists:seq(1, length(Args))], ", ")),  % todo: utf8?
             Packet = <<?COM_QUERY, "EXECUTE ", (list_to_binary(StmtName))/binary, " USING ", ParamNamesBin/binary>>,  % todo: utf8?
-            send_recv(Connection, Packet);
+            send_recv(Connection, Packet, Timeout);
         Error ->
             Error
     end,
     unprepare(Connection, StmtName),
     Ret;
 
-execute(Connection, StmtName, Args) when is_atom(StmtName), is_list(Args) ->
+execute(Connection, StmtName, Args, Timeout) when is_atom(StmtName), is_list(Args) ->
     prepare_statement(Connection, StmtName),
     case set_params(Connection, 1, Args, undefined) of
         OK when is_record(OK, ok_packet) ->
             ParamNamesBin = list_to_binary(string:join([[$@ | integer_to_list(I)] || I <- lists:seq(1, length(Args))], ", ")),  % todo: utf8?
             StmtNameBin = atom_to_binary(StmtName, utf8),
             Packet = <<?COM_QUERY, "EXECUTE ", StmtNameBin/binary, " USING ", ParamNamesBin/binary>>,
-            send_recv(Connection, Packet);
+            send_recv(Connection, Packet, Timeout);
         Error ->
             Error
     end.
 
-prepare(Connection, Name, Statement) when is_atom(Name) ->
-    prepare(Connection, atom_to_list(Name), Statement);
 prepare(Connection, Name, Statement) ->
+    prepare(Connection, Name, Statement, emysql_app:default_timeout()).
+
+prepare(Connection, Name, Statement, Timeout) when is_atom(Name) ->
+    prepare(Connection, atom_to_list(Name), Statement, Timeout);
+prepare(Connection, Name, Statement, Timeout) ->
     StatementBin = encode(Statement, binary),
     Packet = <<?COM_QUERY, "PREPARE ", (list_to_binary(Name))/binary, " FROM ", StatementBin/binary>>,  % todo: utf8?
-    case send_recv(Connection, Packet) of
+    case send_recv(Connection, Packet, Timeout) of
         OK when is_record(OK, ok_packet) ->
             ok;
         Err when is_record(Err, error_packet) ->
             exit({failed_to_prepare_statement, Err#error_packet.msg})
     end.
 
-unprepare(Connection, Name) when is_atom(Name)->
-    unprepare(Connection, atom_to_list(Name));
 unprepare(Connection, Name) ->
+    unprepare(Connection, Name, emysql_app:default_timeout()).
+
+unprepare(Connection, Name, Timeout) when is_atom(Name)->
+    unprepare(Connection, atom_to_list(Name), Timeout);
+unprepare(Connection, Name, Timeout) ->
     Packet = <<?COM_QUERY, "DEALLOCATE PREPARE ", (list_to_binary(Name))/binary>>,  % todo: utf8?
-    send_recv(Connection, Packet).
+    send_recv(Connection, Packet, Timeout).
 
 open_n_connections(PoolId, N) ->
     case emysql_conn_mgr:find_pool(PoolId, emysql_conn_mgr:pools()) of
@@ -342,18 +351,18 @@ now_seconds() ->
 %%--------------------------------------------------------------------
 
 %% @doc A wrapper for emysql_tcp:send_and_recv_packet/3 that may log warnings if any.
-send_recv(#emysql_connection{socket = Socket, warnings = Warnings}, Packet) ->
-    Ret = emysql_tcp:send_and_recv_packet(Socket, Packet, 0),
-    Warnings andalso log_warnings(Socket, Ret),
+send_recv(#emysql_connection{socket = Socket, warnings = Warnings}, Packet, Timeout) ->
+    Ret = emysql_tcp:send_and_recv_packet(Socket, Packet, 0, Timeout),
+    Warnings andalso log_warnings(Socket, Ret, Timeout),
     Ret.
 
-log_warnings(Socket, #ok_packet{warning_count = WarningCount}) when WarningCount > 0 ->
+log_warnings(Socket, #ok_packet{warning_count = WarningCount}, Timeout) when WarningCount > 0 ->
     %% Fetch the warnings and log them in the OTP way.
     #result_packet{rows = WarningRows} =
-        emysql_tcp:send_and_recv_packet(Socket, <<?COM_QUERY, "SHOW WARNINGS">>, 0),
+        emysql_tcp:send_and_recv_packet(Socket, <<?COM_QUERY, "SHOW WARNINGS">>, 0, Timeout),
     WarningMessages = [Message || [_Level, _Code, Message] <- WarningRows],
     error_logger:warning_report({emysql_warnings, WarningMessages});
-log_warnings(_Sock, _OtherPacket) ->
+log_warnings(_Sock, _OtherPacket, _Timeout) ->
     ok.
 
 set_params(_, _, [], Result) -> Result;
