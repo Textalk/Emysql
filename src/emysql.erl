@@ -112,6 +112,7 @@
 -export([
             prepare/2,
             execute/2, execute/3, execute/4, execute/5,
+            transaction/2, transaction/3,
             with_connection/2, with_connection/3,
             default_timeout/0
 ]).
@@ -478,12 +479,6 @@ decrement_pool_size(PoolId, Num) when is_integer(Num) ->
 prepare(StmtName, Statement) when is_atom(StmtName) andalso (is_list(Statement) orelse is_binary(Statement)) ->
     emysql_statements:add(StmtName, Statement).
 
-%% @spec execute(PoolId, Query|StmtName) -> Result | [Result]
-%%      PoolId = atom()
-%%      Query = binary() | string()
-%%      StmtName = atom()
-%%      Result = ok_packet() | result_packet() | error_packet()
-%%
 %% @doc Execute a query, prepared statement or a stored procedure.
 %%
 %% Same as `execute(PoolId, Query, [], default_timeout())'.
@@ -496,20 +491,15 @@ prepare(StmtName, Statement) when is_atom(StmtName) andalso (is_list(Statement) 
 %% @see prepare/2.
 %% @end doc: hd feb 11
 %%
+-spec execute(PoolId :: atom(), Query | Stmt) -> Result | [Result] | unavailable
+    when Query :: iodata(), Stmt :: atom(),
+         Result :: #ok_packet{} | #result_packet{} | #error_packet{}.
 execute(PoolId, Query) when (is_list(Query) orelse is_binary(Query)) ->
     execute(PoolId, Query, []);
 
 execute(PoolId, StmtName) when is_atom(StmtName) ->
     execute(PoolId, StmtName, []).
 
-%% @spec execute(PoolId, Query|StmtName, Args|Timeout) -> Result | [Result]
-%%      PoolId = atom()
-%%      Query = binary() | string()
-%%      StmtName = atom()
-%%      Args = [any()]
-%%      Timeout = integer() | infinity
-%%      Result = ok_packet() | result_packet() | error_packet()
-%%
 %% @doc Execute a query, prepared statement or a stored procedure.
 %%
 %% Same as `execute(PoolId, Query, Args, default_timeout())'
@@ -525,7 +515,9 @@ execute(PoolId, StmtName) when is_atom(StmtName) ->
 %% @see prepare/2.
 %% @end doc: hd feb 11
 %%
-
+-spec execute(PoolId :: atom(), Query | Stmt, Args | Timeout) -> Result | [Result] | unavailable
+    when Query :: iodata(), Stmt :: atom(), Args :: [term()], Timeout :: timeout(),
+         Result :: #ok_packet{} | #result_packet{} | #error_packet{}.
 execute(PoolId, Query, Args) when (is_list(Query) orelse is_binary(Query)) andalso is_list(Args) ->
     execute(PoolId, Query, Args, default_timeout());
 execute(PoolId, StmtName, Args) when is_atom(StmtName), is_list(Args) ->
@@ -536,12 +528,6 @@ execute(PoolId, StmtName, Timeout) when is_atom(StmtName), (is_integer(Timeout) 
     execute(PoolId, StmtName, [], Timeout).
 
 %% @doc Execute a query, prepared statement or a stored procedure.
-%%
-%% <ll>
-%% <li>Opens a connection,</li>
-%% <li>sends the query string, or statement atom, and</li>
-%% <li>returns the result packet.</li>
-%% </ll>
 %%
 %% Timeout is the query timeout in milliseconds or the atom infinity.
 %%
@@ -554,7 +540,7 @@ execute(PoolId, StmtName, Timeout) when is_atom(StmtName), (is_integer(Timeout) 
 %% @end doc: hd feb 11
 %%
 -spec execute(PoolId :: atom(), Query :: iodata() | atom(), Args :: [term()],
-              Timeout :: timeout()) -> Result | [Result]
+              Timeout :: timeout()) -> Result | [Result] | unavailable
     when Result :: #ok_packet{} | #result_packet{} | #error_packet{}.
 execute(PoolId, Query, Args, Timeout)
   when is_list(Query) orelse is_binary(Query) orelse is_atom(Query),
@@ -562,14 +548,10 @@ execute(PoolId, Query, Args, Timeout)
        is_integer(Timeout) orelse Timeout == infinity ->
     execute(PoolId, Query, Args, Timeout, blocking).
 
-%% @doc Execute a query, prepared statement or a stored procedure - but return immediately, returning the atom 'unavailable', when no connection in the pool is readily available without wait.
+%% @doc Execute a query, prepared statement or a stored procedure.
 %%
-%% <ll>
-%% <li>Checks if a connection is available,</li>
-%% <li>returns 'unavailable' if not,</li>
-%% <li>else as the other exception functions(): sends the query string, or statement atom, and</li>
-%% <li>returns the result packet.</li>
-%% </ll>
+%% If BlockingMode is 'nonblocking' and there are no available connections in
+%% the pool, them atom 'unavailable' is returned.
 %%
 %% Timeout is the query timeout in milliseconds or the atom infinity.
 %%
@@ -581,10 +563,12 @@ execute(PoolId, Query, Args, Timeout)
 %% @see execute/3.
 %% @see execute/4.
 %% @see prepare/2.
-%% @end doc: hd feb 11
 %%
--spec execute(PoolId :: atom(), Query :: iodata() | atom(), Args :: [term()], Timeout :: timeout(),
-              BlockingMode :: nonblocking | blocking) -> Result | [Result]
+-spec execute(PoolId :: atom(),
+              Query :: iodata() | atom(),
+              Args :: [term()],
+              Timeout :: timeout(),
+              BlockingMode :: nonblocking | blocking) -> Result | [Result] | unavailable
     when Result :: #ok_packet{} | #result_packet{} | #error_packet{}.
 execute(PoolId, Query, Args, Timeout, BlockingMode)
   when is_list(Query) orelse is_binary(Query) orelse is_atom(Query),
@@ -595,19 +579,51 @@ execute(PoolId, Query, Args, Timeout, BlockingMode)
                  end,
     with_connection(PoolId, ExecuteFun, BlockingMode).
 
+%% @doc Applies a function within database transaction. All queries within the
+%% transactions should performed on the connection passed to the fun, using the
+%% functions in emysql_conn.
+-spec transaction(PoolId :: atom(),
+                  Fun :: fun((Connection :: #emysql_connection{}) -> Result)) ->
+    Result | unavailable when Result :: term().
+transaction(PoolId, Fun) ->
+    transaction(PoolId, Fun, blocking).
+
+%% @doc Applies a function within database transaction. All queries within the
+%% transactions should performed on the connection passed to the fun, using the
+%% functions in emysql_conn.
+%%
+%% If the 3rd argument is 'nonblocking' and there are no available connections
+%% in the pool, 'unavailable' is returned.
+-spec transaction(PoolId :: atom(),
+                  Fun :: fun((Connection :: #emysql_connection{}) -> Result),
+                  BlockingMode :: blocking | nonblocking) -> Result | unavailable
+    when Result :: term().
+transaction(PoolId, Fun, BlockingMode) ->
+    with_connection(PoolId, fun (Connection) ->
+        emysql_conn:execute(Connection, <<"BEGIN">>, []),
+        try Fun(Connection) of
+            Result ->
+                emysql_conn:execute(Connection, <<"COMMIT">>, []),
+                Result
+        catch Class:Exception ->
+            emysql_conn:execute(Connection, <<"ROLLBACK">>, []),
+            erlang:raise(Class, Exception, erlang:get_stacktrace())
+        end
+    end).
+
 %% @doc Applies the function Fun on a connection from the pool without timeout. Using this lets you
 %% work an a connection without worrying about returning the connection to the pool afterwards.
 -spec with_connection(PoolId :: atom(),
-                      Fun :: fun((Connection :: #emysql_connection{}) -> A)) -> A
-    when A :: term().
+                      Fun :: fun((Connection :: #emysql_connection{}) -> Result)) ->
+    Result | unavailable when Result :: term().
 with_connection(PoolId, Fun) when is_function(Fun, 1) ->
     with_connection(PoolId, Fun, blocking).
 
 %% @doc Applies the function Fun on a connection from the pool.
 -spec with_connection(PoolId :: atom(),
-                      Fun :: fun((Connection :: term()) -> A),
-                      BlockingMode :: blocking | nonblocking) -> A
-    when A :: term().
+                      Fun :: fun((Connection :: term()) -> Result),
+                      BlockingMode :: blocking | nonblocking) -> Result | unavailable
+    when Result :: term().
 with_connection(PoolId, Fun, BlockingMode)
   when is_function(Fun, 1),
        BlockingMode == nonblocking orelse BlockingMode == blocking ->
