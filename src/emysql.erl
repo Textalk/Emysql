@@ -597,7 +597,6 @@ execute(PoolId, Query, Args, Timeout, BlockingMode)
 
 %% @doc Applies the function Fun on a connection from the pool without timeout. Using this lets you
 %% work an a connection without worrying about returning the connection to the pool afterwards.
-%% TODO: Test for this.
 -spec with_connection(PoolId :: atom(),
                       Fun :: fun((Connection :: #emysql_connection{}) -> A)) -> A
     when A :: term().
@@ -619,8 +618,32 @@ with_connection(PoolId, Fun, BlockingMode)
             emysql_conn_mgr:wait_for_connection(PoolId)
     end,
     case Connection of
-        Connection1 when is_record(Connection1, emysql_connection) ->
-            with_connection_helper(Connection1, Fun);
+        _Connection when is_record(Connection, emysql_connection) ->
+            %% Ping the connection if it hasn't been used for a while to make sure it's alive.
+            Connection1 = case emysql_conn:need_test_connection(Connection) of
+               true ->
+                  emysql_conn:test_connection(Connection, keep);
+               false ->
+                  Connection
+            end,
+            %% Execute the query on the connection.
+            try Fun(Connection1) of
+                Result ->
+                    %% Success. Return the connection to the pool.
+                    emysql_conn_mgr:pass_connection(Connection1),
+                    Result
+            catch
+                Class:Exception ->
+                    %% Re-open connection, then re-raise the error.
+                    case emysql_conn:reset_connection(emysql_conn_mgr:pools(), Connection1, pass) of
+                        {error, FailedReset} ->
+                            error_logger:warning_msg("Failed to reset emysql connection: ~p",
+                                                     [FailedReset]);
+                        _ ->
+                            ok
+                    end,
+                    erlang:raise(Class, Exception, erlang:get_stacktrace())
+            end;
         unavailable ->
             unavailable
     end.
@@ -708,35 +731,3 @@ as_record(Res, Recname, Fields) -> emysql_conv:as_record(Res, Recname, Fields).
 %%  Res = emysql:execute(pool1, "select * from foo"),
 %%  Res:as_record(foo, record_info(fields, foo)).
 as_record(Res, Recname, Fields, Fun) -> emysql_conv:as_record(Res, Recname, Fields, Fun).
-
-%%--------------------------------------------------------------------
-%%% Internal functions
-%%--------------------------------------------------------------------
-
-%% @doc Applies a function to a connection and returns the connection back to
-%% the pool. Re-opens the connection if an error occurs.
-with_connection_helper(Connection, Fun) ->
-    %% Ping the connection if it hasn't been used for a while to make sure it's alive.
-    Connection1 = case emysql_conn:need_test_connection(Connection) of
-       true ->
-          emysql_conn:test_connection(Connection, keep);
-       false ->
-          Connection
-    end,
-    %% Execute the query on the connection.
-    try Fun(Connection1) of
-        Result ->
-            %% Success. Return the connection to the pool.
-            emysql_conn_mgr:pass_connection(Connection1),
-            Result
-    catch
-        Class:Exception ->
-            %% Re-open connection, then re-raise the error.
-            case emysql_conn:reset_connection(emysql_conn_mgr:pools(), Connection1, pass) of
-                {error, FailedReset} ->
-                    error_logger:warning_msg("Failed to reset emysql connection: ~p", [FailedReset]);
-                _ ->
-                    ok
-            end,
-            erlang:raise(Class, Exception, erlang:get_stacktrace())
-    end.
