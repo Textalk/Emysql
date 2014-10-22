@@ -113,9 +113,7 @@ If you are looking for the **plain necessities**, you should use the [ejabberd][
 
 #### Transaction
 
-This driver currently does not support transactions.
-
-For **mnesia-style transactions**, one of the multiple '[erlang-mysql-driver][22]s' may suite you best. There are [quite many][16] branches of it out there, and they are based on the same project as the ejabberd driver. To learn more about out the differences between the drivers, see the [mysql driver history][History].
+This driver has a recently got support for transactions. See [Transactions] under the Samples section below.
 
 ## Samples                                             <a name=Samples></a>
 
@@ -171,6 +169,37 @@ emysql:execute(my_pool, my_stmt, [1]).
 emysql:execute(my_pool, <<"create procedure my_sp() begin select * from mytable; end">>).
 
 emysql:execute(my_pool, <<"call my_sp();">>).
+```
+
+### Transactions
+
+```Erlang
+emysql:transaction(my_pool, fun (Connection) ->
+    #result_packet{rows = [[NumItems]]} =
+        emysql_conn:execute(Connection, <<"SELECT COUNT(*) FROM my_waiting_items">>, []),
+    emysql_conn:execute(Connection, <<"UPDATE mytable SET handled = handled + ?", [NumItems]),
+    emysql_conn:execute(Connection, <<"DELETE FROM my_waiting_items">>, []),
+end).
+```
+
+### With Connection, Without Transaction
+
+Sometimes it is useful to work on a connection without starting a transaction. Situations include
+setting and reading variables, working with temporary tables, fetching warnings after a query, etc.
+
+```Erlang
+emysql:with_connection(my_pool, fun (Connection) ->
+    emysql_conn:execute(Connection, <<"CREATE TEMPORARY TABLE mytmp (foo INT NOT NULL)">>, []),
+    Result = emysql_conn:execute(Connection, <<"INSERT INTO mytmptable (foo) VALUES (NULL)">>);
+    case Result of
+        #ok_packet{warning_count = 0} ->
+            ok;
+        #ok_packet{warning_count = N} when N > 0 ->
+            WarningResult = emysql_conn:execute(Connection, <<"SHOW WARNINGS">>, []),
+            %% log warnings, etc.
+    end,
+    emysql_conn:execute(Connection, <<"DROP TABLE mytmp">>, [])
+end).
 ```
 
 ### Result Record
