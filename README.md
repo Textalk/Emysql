@@ -113,7 +113,7 @@ If you are looking for the **plain necessities**, you should use the [ejabberd][
 
 #### Transaction
 
-This driver has a recently got support for transactions. See [Transactions] under the Samples section below.
+This driver has a recently got experimental support for transactions. See the Samples section below.
 
 ## Samples                                             <a name=Samples></a>
 
